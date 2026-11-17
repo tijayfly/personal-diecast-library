@@ -32,6 +32,19 @@
   const value = (it) => it.current && it.current.gbp != null ? it.current.gbp : null;
   const pl = (it) => value(it) == null ? null : value(it) - cost(it);
   const plPct = (it) => cost(it) > 0 && pl(it) != null ? (pl(it) / cost(it)) * 100 : null;
+  const priceErrors = (items) => items.filter((i) => i.current && i.current.error).length;
+  const errLine = (n) => `<span class="price-err">⚠ eBay failed for ${n} car${n === 1 ? '' : 's'}</span>`;
+  // Refresh values, then report any items whose refresh failed this time round.
+  async function refreshValues(ids) {
+    const start = new Date().toISOString();
+    DB = await API.refreshPrices(ids);
+    const set = ids ? DB.items.filter((i) => ids.includes(i.id)) : DB.items;
+    const failed = set.filter((i) => i.current && i.current.errorAt && i.current.errorAt >= start);
+    if (!failed.length) toast(set.length === 1 ? 'Value refreshed' : 'Values refreshed');
+    else if (set.length === 1) toast(`Couldn't refresh: ${failed[0].current.error}`, 7000);
+    else toast(`Couldn't refresh ${failed.length} of ${set.length} items: ${failed[0].current.error}`, 7000);
+    return failed.length;
+  }
   const needsCheck = (i) => !!(i.imageReview || !i.image);
   const cls = (n) => n == null || Math.abs(n) < 0.005 ? '' : n > 0 ? 'gain' : 'loss';
   const models = (items) => items.reduce((s, i) => s + (i.accessory ? 0 : (i.qty || 1)), 0);
@@ -65,6 +78,7 @@
     if (!el.dataset.dead) { el.dataset.dead = 1; el.replaceWith(Object.assign(document.createElement('div'), { className: 'noimg', innerHTML: ICON.camera + 'Photo unavailable' })); }
   }, true);
   function toast(msg, ms = 2600) {
+    document.querySelectorAll('.toast').forEach((o) => o.remove());   // newest message replaces the last one
     const t = document.createElement('div'); t.className = 'toast'; t.textContent = msg; document.body.appendChild(t);
     setTimeout(() => t.remove(), ms);
   }
@@ -147,7 +161,7 @@
     return `<section class="stats">
       <div class="stat"><div class="stat-label">Models</div><div class="stat-value">${cars}</div><div class="stat-sub">${gifts} gifts${acc ? ` · +${acc} playset${acc > 1 ? 's' : ''}` : ''}</div></div>
       <div class="stat"><div class="stat-label">Total paid</div><div class="stat-value">${gbp(paid)}</div><div class="stat-sub">${bought ? gbp(boughtPaid / bought, 2) + ' per bought model' : 'gifts counted as £0'}</div></div>
-      <div class="stat"><div class="stat-label">Current value</div><div class="stat-value">${gbp(val)}</div><div class="stat-sub">${valued.length}/${items.length} valued</div></div>
+      <div class="stat"><div class="stat-label">Current value</div><div class="stat-value">${gbp(val)}</div><div class="stat-sub">${priceErrors(items) ? errLine(priceErrors(items)) : `${valued.length}/${items.length} valued`}</div></div>
       <div class="stat"><div class="stat-label">Profit / loss</div><div class="stat-value ${cls(gain)}">${signed(gain)}</div><div class="stat-sub ${cls(gain)}">${paid ? pct((gain / paid) * 100) + ' on cost' : ''}</div></div>
     </section>`;
   }
@@ -221,7 +235,7 @@
     else if (!VIEW) html += `<section class="stats" style="grid-template-columns:repeat(3,1fr)">
         <div class="stat"><div class="stat-label">Wanted</div><div class="stat-value">${all.length}</div><div class="stat-sub">cars on the list</div></div>
         <div class="stat"><div class="stat-label">Target spend</div><div class="stat-value">${gbp(all.reduce((s, i) => s + (i.targetPrice || 0), 0))}</div><div class="stat-sub">from your notes</div></div>
-        <div class="stat"><div class="stat-label">Market now</div><div class="stat-value">${gbp(all.reduce((s, i) => s + (value(i) || 0), 0))}</div><div class="stat-sub">${all.some((i) => i.current && i.current.dummy) ? 'dummy data' : 'eBay UK'}</div></div></section>`;
+        <div class="stat"><div class="stat-label">Market now</div><div class="stat-value">${gbp(all.reduce((s, i) => s + (value(i) || 0), 0))}</div><div class="stat-sub">${priceErrors(all) ? errLine(priceErrors(all)) : all.some((i) => i.current && i.current.dummy) ? 'dummy data' : 'eBay UK'}</div></div></section>`;
     html += toolbar(counts, list, items.length);
     if (!items.length) html += `<div class="empty">Nothing matches.${!VIEW && list === 'wishlist' ? ' Add a car with “+ Add car” and choose Wishlist.' : ''}</div>`;
     else html += state.view === 'table' ? table(items, list) : `<div class="grid">${items.map(card).join('')}</div>`;
@@ -274,7 +288,7 @@
     let money = '';
     if (!VIEW) {
       const c = it.current || {};
-      const curLine = `<div><div class="k">Current value</div><div class="v">${gbp(value(it), 2)}</div><div class="s">${esc(c.source || 'not valued')}${c.samples ? ' · ' + c.samples + ' listings' : ''}</div></div>`;
+      const curLine = `<div><div class="k">Current value</div><div class="v">${gbp(value(it), 2)}</div><div class="s">${esc(c.source || 'not valued')}${c.samples ? ' · ' + c.samples + ' listings' : ''}</div>${c.error ? `<div class="s price-err">⚠ Last refresh failed: ${esc(c.error)}</div>` : ''}</div>`;
       if (it.list === 'wishlist') {
         money = `<div class="money"><div><div class="k">Target price</div><div class="v">${gbp(it.targetPrice, 2)}</div><div class="s">from your list</div></div>${curLine}</div>`;
       } else {
@@ -313,7 +327,7 @@
     if (VIEW) return;
     document.getElementById('edit').onclick = () => editForm(it);
     document.getElementById('photo').onclick = () => photoPicker(it);
-    document.getElementById('reprice').onclick = async () => { DB = await API.refreshPrices([it.id]); toast('Value refreshed'); renderItem(id); };
+    document.getElementById('reprice').onclick = async (e) => { e.target.disabled = true; e.target.textContent = 'Refreshing…'; await refreshValues([it.id]); renderItem(id); };
     document.getElementById('del').onclick = async () => { if (await API.deleteItem(it.id)) { DB = await API.getDB(); location.hash = backHref; } };
     const g = document.getElementById('gotit');
     if (g) g.onclick = () => gotIt(it);
@@ -539,11 +553,12 @@
         <div class="form">
           <label class="span-6 check"><input type="radio" name="priceProvider" value="dummy" ${s.priceProvider !== 'ebay' ? 'checked' : ''}> Dummy data (placeholder values from the price paid, or a typical price for the brand and range)</label>
           <label class="span-6 check"><input type="radio" name="priceProvider" value="ebay" ${s.priceProvider === 'ebay' ? 'checked' : ''}> eBay UK — median asking price of new, Buy It Now listings</label>
+          <p class="span-6 hint" style="margin:4px 0 0">Use your <b>Production</b> keys (not Sandbox), App ID and Cert ID from the same keyset. They're stored only in your local data file.</p>
           <label class="span-3">eBay App ID (Client ID)<input class="input" name="ebayAppId" value="${esc(s.ebayAppId || '')}" autocomplete="off"></label>
           <label class="span-3">eBay Cert ID (Client Secret)<input class="input" name="ebayCertId" type="password" value="${esc(s.ebayCertId || '')}" autocomplete="off"></label>
         </div>
-        <p class="hint" style="margin-top:10px">Keys are stored only in your local data file.</p>
-        <div class="row"><button class="btn primary" type="submit">Save</button><button class="btn" type="button" id="rp">Refresh all values</button></div>
+        <p class="hint" id="ebaytest" style="margin-top:10px"></p>
+        <div class="row"><button class="btn primary" type="submit">Save</button><button class="btn" type="button" id="rp">Refresh all values</button><button class="btn" type="button" id="et">Test eBay keys</button></div>
       </form>
       <form class="panel" id="gf2"><h2>View-only page</h2><p class="hint">Exports a static web page of your collection with <b>all price data removed</b> (paid, current values, P&amp;L, wishlist targets, where you bought it).</p>
         <div class="row"><button class="btn red" type="button" id="ex">${s.githubPublish ? 'Export &amp; publish' : 'Export view-only snapshot'}</button><button class="btn" type="button" id="exo">Open folder</button></div>
@@ -574,7 +589,15 @@
       if (ns.priceProvider === 'ebay' && (!ns.ebayAppId || !ns.ebayCertId)) { toast('Add both eBay keys first — staying on dummy data'); ns.priceProvider = 'dummy'; }
       DB.settings = await API.saveSettings(ns); toast('Settings saved'); renderTabs('settings');
     };
-    document.getElementById('rp').onclick = async (e) => { e.target.disabled = true; e.target.textContent = 'Refreshing…'; DB = await API.refreshPrices(); toast('Values refreshed'); renderSettings(); };
+    document.getElementById('rp').onclick = async (e) => { e.target.disabled = true; e.target.textContent = 'Refreshing…'; await refreshValues(); renderSettings(); };
+    document.getElementById('et').onclick = async (e) => {
+      // tests the keys as typed in the form, saved or not
+      const f = new FormData(document.getElementById('sf')); const out = document.getElementById('ebaytest');
+      e.target.disabled = true; out.className = 'hint'; out.textContent = 'Testing eBay keys…';
+      const r = await API.testEbay(String(f.get('ebayAppId') || '').trim(), String(f.get('ebayCertId') || '').trim());
+      e.target.disabled = false;
+      out.className = 'hint ' + (r.ok ? 'price-ok' : 'price-err'); out.textContent = (r.ok ? '✓ ' : '⚠ ') + r.message;
+    };
     const doExport = async (publish) => {
       const st = document.getElementById('ghstatus'); st.textContent = publish ? 'Exporting and publishing to GitHub…' : 'Exporting…';
       const r = await API.exportViewOnly(publish === undefined ? undefined : { publish });
